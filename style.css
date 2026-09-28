@@ -2,6 +2,9 @@
 #rpd-panel * { box-sizing: border-box; }
 #rpd-panel .rpd-top, #rpd-panel .rpd-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #rpd-panel .rpd-top { justify-content: space-between; }
+#rpd-panel .rpd-actions { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; width: 100%; }
+#rpd-panel .rpd-actions > button.menu_button { display: block; width: 100% !important; min-width: 0; max-width: none; height: auto; margin: 0; padding: 9px 10px; font-size: inherit; line-height: 1.4; writing-mode: horizontal-tb; white-space: normal; word-break: normal; overflow-wrap: normal; }
+#rpd-panel .rpd-last { border-left: 3px solid #a99bdd; padding: 8px 10px; margin: 10px 0; white-space: pre-line; overflow-wrap: anywhere; }
 #rpd-panel .rpd-big { font-size: 1.45em; font-weight: 650; }
 #rpd-panel progress { width: 100%; height: 12px; accent-color: #a99bdd; margin: 8px 0; }
 #rpd-panel .rpd-muted { opacity: .75; font-size: .9em; }
@@ -16,4 +19,4 @@
 #rpd-panel .rpd-log { border-left: 2px solid #a99bdd; padding-left: 9px; margin: 10px 0; overflow-wrap: anywhere; }
 #rpd-panel .rpd-danger { border-color: #b58686; }
 #rpd-panel .rpd-error { color: #e2ad80; }
-@media(max-width: 420px) { #rpd-panel .rpd-controls { grid-template-columns: 1fr; } }
+@media(max-width: 480px) { #rpd-panel .rpd-controls, #rpd-panel .rpd-actions { grid-template-columns: 1fr; } }
