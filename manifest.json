@@ -1,0 +1,11 @@
+{
+  "display_name": "RP Director · 剧情导演",
+  "author": "RP Director",
+  "version": "1.0.0",
+  "loading_order": 80,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "generate_interceptor": "rpDirectorInterceptor"
+}

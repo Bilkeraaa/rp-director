@@ -1,0 +1,19 @@
+#rpd-panel { padding: 12px; line-height: 1.5; }
+#rpd-panel * { box-sizing: border-box; }
+#rpd-panel .rpd-top, #rpd-panel .rpd-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#rpd-panel .rpd-top { justify-content: space-between; }
+#rpd-panel .rpd-big { font-size: 1.45em; font-weight: 650; }
+#rpd-panel progress { width: 100%; height: 12px; accent-color: #a99bdd; margin: 8px 0; }
+#rpd-panel .rpd-muted { opacity: .75; font-size: .9em; }
+#rpd-panel .rpd-status { margin: 8px 0; overflow-wrap: anywhere; }
+#rpd-panel details { margin-top: 12px; }
+#rpd-panel summary { cursor: pointer; }
+#rpd-panel .rpd-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 10px; }
+#rpd-panel label { display: flex; gap: 7px; align-items: center; }
+#rpd-panel .rpd-field { display: grid; gap: 4px; }
+#rpd-panel select, #rpd-panel input[type=number] { width: 100%; min-width: 0; }
+#rpd-panel button { min-height: 36px; white-space: normal; }
+#rpd-panel .rpd-log { border-left: 2px solid #a99bdd; padding-left: 9px; margin: 10px 0; overflow-wrap: anywhere; }
+#rpd-panel .rpd-danger { border-color: #b58686; }
+#rpd-panel .rpd-error { color: #e2ad80; }
+@media(max-width: 420px) { #rpd-panel .rpd-controls { grid-template-columns: 1fr; } }
