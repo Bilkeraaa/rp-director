@@ -20,3 +20,5 @@
 #rpd-panel .rpd-danger { border-color: #b58686; }
 #rpd-panel .rpd-error { color: #e2ad80; }
 @media(max-width: 480px) { #rpd-panel .rpd-controls, #rpd-panel .rpd-actions { grid-template-columns: 1fr; } }
+
+#rpd-panel .rpd-story { white-space: pre-line; overflow-wrap: anywhere; padding: 8px 0; }

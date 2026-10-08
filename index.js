@@ -1,4 +1,4 @@
-import { KEY, DEFAULTS, uid, freshState, derive, parseStatus, stripStatus, buildPrompt, clamp } from './core.mjs?v=1.1.0';
+import { KEY, DEFAULTS, uid, freshState, derive, parseStatus, stripStatus, buildPrompt, clamp, describeResult } from './core.mjs?v=1.2.0';
 
 const ctx = () => SillyTavern.getContext();
 let pending = null;
@@ -97,13 +97,15 @@ function render() {
     root.querySelector('progress').max = v.interval;
     root.querySelector('progress').value = Math.min(v.progress, v.interval);
     root.querySelector('[data-total]').textContent = `本次累计 ${v.total} 个有效回合 · 每个聊天独立`;
-    root.querySelector('[data-mode]').textContent = s.adaptive ? `自动间隔 · 本周期 ${v.interval} 回合；没有新事件会提前复查` : `固定间隔 · ${s.interval} 回合；报告异常时2回合重试`;
+    root.querySelector('[data-mode]').textContent = s.adaptive ? `自动间隔 · 本周期 ${v.interval} 回合；报告停滞时提前复查` : `固定间隔 · ${s.interval} 回合；报告异常时2回合重试`;
     const checking = pending?.check && !pending.used && busy;
     const last = v.history.at(-1);
     root.querySelector('[data-status]').textContent = !st ? '先打开一个聊天。' : notice || (!s.enabled ? '已暂停。' : checking ? '本轮正在随正文检查剧情…' : st.force ? '已安排：下次正常回复检查。' : last?.check && (!last.result || last.result.rejected) ? '上次报告未通过，将自动重试。' : `再完成 ${Math.max(1, v.interval - v.progress)} 个回合检查；不会单独调用模型。`);
     root.querySelector('[data-status]').classList.toggle('rpd-error', Boolean(notice || (last?.check && (!last.result || last.result.rejected))));
-    const latest = last?.result;
-    root.querySelector('[data-last]').textContent = !last ? '尚无检查结果。进度满格表示检查，不代表一定有新事件。' : !latest ? '上次未收到可用的模型报告。' : latest.rejected ? `上次未通过核对\n${latest.issue}` : latest.protocol !== 2 ? `上次是旧版模型自报，未核对正文。${latest.action === 'event' && latest.level === 0 ? '“引入变化 / L0”是矛盾记录，不能视为新事件。' : '更新后的检查会说明具体新增了什么。'}` : latest.action === 'event' ? `上次模型报告了新事件 · L${latest.level}\n新增：${latest.change}\n可互动：${latest.hook}` : latest.action === 'seed' ? `上次只铺垫，尚未展开事件\n${latest.change}` : `上次没有引入新事件\n理由：${latest.summary || '模型未说明'}`;
+    root.querySelector('[data-last]').textContent = !last ? '尚无检查结果。满格时判断当前剧情适合内部推进、过渡还是开启新事。' : describeResult(last.result);
+    root.querySelector('[data-story]').textContent = v.story
+        ? `当前事项：${v.story.thread}\n角色目标：${v.story.goal || '未明确'}\n阻碍：${v.story.obstacle || '无明确阻碍'}\n待解决：${v.story.open || '无'}\n${v.lastChange ? `上次报告的实质变化：第 ${v.lastChange.round} 回合 · ${v.lastChange.after}\n此后累计 ${v.roundsSinceChange} 个回合` : '尚无新版实质变化报告'}\n连续 ${v.noProgressChecks} 次有效检查未报告实质变化（仅供判断，不等于必然停滞）`
+        : '首次新版检查后形成剧情短记忆，随当前回复版本保存。';
     for (const el of root.querySelectorAll('[data-setting]')) {
         const val = s[el.dataset.setting];
         if (el.type === 'checkbox') el.checked = Boolean(val); else el.value = String(val);
@@ -114,12 +116,10 @@ function render() {
     const log = root.querySelector('[data-history]');
     log.replaceChildren();
     if (!v.history.length) log.textContent = '尚未检查。';
-    const phases = { active: '剧情进行中', settling: '余波收尾', calm: '日常', stagnant: '停滞' };
-    const actions = { none: '未引入新事件', seed: '仅铺垫', event: '模型报告新事件' };
     for (const record of [...v.history].reverse()) {
         const el = document.createElement('div'); el.className = 'rpd-log';
         const r = record.result;
-        el.textContent = r ? `第 ${record.round} 回合 · ${phases[r.phase]} · ${r.rejected ? '报告未通过' : r.protocol !== 2 ? '旧版自报，未核对' : actions[r.action]} · L${r.level}\n${r.issue || r.change || r.summary || '模型未说明'}${r.hook ? `\n可互动：${r.hook}` : ''}${r.evidence ? `\n正文原句：${r.evidence}` : ''}\n当时安排间隔 ${r.next} 回合${r.seed ? `\n待发展线索：${r.seed}` : ''}${r.warning ? `\n${r.warning}` : ''}` : `第 ${record.round} 回合 · 未收到有效状态，2回合后重试`;
+        el.textContent = `第 ${record.round} 回合 · ${describeResult(r)}${r?.evidence ? `\n正文原句：${r.evidence}` : ''}\n当时安排间隔 ${r?.next ?? 2} 回合`;
         el.style.whiteSpace = 'pre-line'; log.append(el);
     }
 }
@@ -130,7 +130,7 @@ function mount() {
     if (!host) return;
     const wrapper = document.createElement('div');
     wrapper.className = 'extension_container';
-    wrapper.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>RP Director · 剧情导演 <small>1.1.0</small></b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="rpd-panel">
+    wrapper.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>RP Director · 剧情导演 <small>1.2.0</small></b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="rpd-panel">
       <div class="rpd-top"><span>距离下次剧情检查</span><label><input type="checkbox" data-setting="enabled">启用</label></div>
       <div class="rpd-big" data-progress></div><progress value="0" max="8" aria-label="剧情检查进度"></progress>
       <div class="rpd-muted" data-total></div><div class="rpd-muted" data-mode></div><div class="rpd-status" data-status role="status" aria-live="polite"></div><div class="rpd-last" data-last></div>
@@ -139,11 +139,12 @@ function mount() {
       <details><summary>导演设置</summary><div class="rpd-controls">
       <label class="rpd-field">基础间隔（3–20回合）<input class="text_pole" type="number" min="3" max="20" data-setting="interval"></label>
       <label class="rpd-field">剧情活跃度<select class="text_pole" data-setting="activity"><option value="quiet">舒缓</option><option value="balanced">适中</option><option value="lively">活跃</option></select></label>
-      <label class="rpd-field">事件等级上限<select class="text_pole" data-setting="maxLevel"><option value="1">L1 小插曲</option><option value="2">L2 支线（默认）</option><option value="3">L3 重要事件</option><option value="4">L4 重大转折</option></select></label>
+      <label class="rpd-field">变化影响上限<select class="text_pole" data-setting="maxLevel"><option value="1">L1 小插曲</option><option value="2">L2 支线（默认）</option><option value="3">L3 重要事件</option><option value="4">L4 重大转折</option></select></label>
       <label class="rpd-field">新NPC倾向<select class="text_pole" data-setting="npc"><option value="low">少引入</option><option value="normal">顺其自然</option><option value="high">较丰富</option></select></label>
       <label><input type="checkbox" data-setting="adaptive">AI调整下次间隔</label><label><input type="checkbox" data-setting="integrity">保留Char核心能力</label>
       <label><input type="checkbox" data-setting="care">偏好照顾型互动</label><label><input type="checkbox" data-setting="major">允许重大危机</label>
-      </div><p class="rpd-muted">关闭“AI调整下次间隔”可固定回合数，立即生效。自动模式下基础间隔用于清空后的首次检查。重大危机默认关闭。原句核对只检查报告是否对应正文，不能替代对剧情质量的判断。</p></details>
+      </div><p class="rpd-muted">关闭“AI调整下次间隔”可固定回合数，立即生效。自动模式下基础间隔用于清空后的首次检查。重大危机默认关闭。先判断发展中、收尾、平淡或停滞，再选择内部推进、自然过渡或新事。意外可来自角色主动、外部世界或已有后果，不固定抽签。原句与结构核对不能保证模型准确判断剧情质量。</p></details>
+      <details><summary>当前剧情短记忆</summary><div class="rpd-story" data-story></div></details>
       <details><summary>最近5次检查</summary><div data-history></div></details>
       <p class="rpd-muted">一条用户消息获得有效回复算1回合；开场白、续写、重生成不额外累计。切换回复版本和删除消息时，进度随当前记录重新计算。</p>
     </div></div></div>`;
