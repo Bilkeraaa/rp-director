@@ -1,4 +1,4 @@
-import { KEY, DEFAULTS, uid, freshState, derive, parseStatus, stripStatus, buildPrompt, clamp, describeResult } from './core.mjs?v=1.2.0';
+import { KEY, DEFAULTS, uid, freshState, derive, parseStatus, stripStatus, buildPrompt, clamp, describeResult } from './core.mjs?v=1.2.1';
 
 const ctx = () => SillyTavern.getContext();
 let pending = null;
@@ -52,7 +52,7 @@ globalThis.rpDirectorInterceptor = async (_chat, _size, _abort, type = 'normal')
     if (type === 'normal' && full.records.some(r => r.turn === turn)) return;
     const view = derive(c.chat, st, s, turn);
     const check = st.force || view.progress + 1 >= view.interval;
-    pending = { key: chatKey(c), chat: c.chat, epoch: st.epoch, turn, user, check, nonce: uid(), settings: { ...s }, history: view.history, used: false };
+    pending = { key: chatKey(c), chat: c.chat, epoch: st.epoch, turn, user, check, nonce: uid().replace(/-/g, '').slice(0, 12), settings: { ...s }, history: view.history, used: false };
     stopped = false;
     if (check) c.setExtensionPrompt(KEY, buildPrompt(s, st, view, pending.nonce), 1, 0, false, 0);
     render();
@@ -70,11 +70,13 @@ async function received(id, type) {
     const matching = p && !p.used && !aborted && st?.epoch === p.epoch && chatKey(c) === p.key && c.chat === p.chat && latestUser(c, Number(id)) === p.user;
     if (matching && cleaned.trim()) {
         p.used = true;
-        const result = p.check ? parseStatus(original, p.nonce, p.settings, p.history) : null;
+        const diagnostic = {};
+        const result = p.check ? parseStatus(original, p.nonce, p.settings, p.history, diagnostic) : null;
         m.extra ??= {};
-        m.extra[KEY] = { epoch: p.epoch, turn: p.turn, check: p.check, result, at: new Date().toISOString() };
+        m.extra[KEY] = { epoch: p.epoch, turn: p.turn, check: p.check, result, diagnostic: p.check ? diagnostic : null, at: new Date().toISOString() };
         if (p.check) st.force = false;
-        notice = p.check && !result ? '本轮已完成，但模型未回传有效导演状态；2个有效回合后重试。' : result?.rejected ? `${result.issue}2个有效回合后重试。` : '';
+        const retry = derive(c.chat, st, settings()).interval;
+        notice = p.check && (!result || result.rejected) ? `${diagnostic.message || result?.issue} ${retry}个有效回合后检查。` : '';
     } else if (p && !p.used && aborted && st?.epoch === p.epoch && c.chat === p.chat && latestUser(c, Number(id)) === p.user) {
         // Swipes may inherit the previous reply's extra fields. An aborted replacement is not a completed turn.
         if (m.extra) delete m.extra[KEY];
@@ -97,12 +99,12 @@ function render() {
     root.querySelector('progress').max = v.interval;
     root.querySelector('progress').value = Math.min(v.progress, v.interval);
     root.querySelector('[data-total]').textContent = `本次累计 ${v.total} 个有效回合 · 每个聊天独立`;
-    root.querySelector('[data-mode]').textContent = s.adaptive ? `自动间隔 · 本周期 ${v.interval} 回合；报告停滞时提前复查` : `固定间隔 · ${s.interval} 回合；报告异常时2回合重试`;
+    root.querySelector('[data-mode]').textContent = s.adaptive ? `自动间隔 · 本周期 ${v.interval} 回合；报告停滞时提前复查` : `固定间隔 · ${s.interval} 回合；连续失败时延长重试间隔`;
     const checking = pending?.check && !pending.used && busy;
     const last = v.history.at(-1);
-    root.querySelector('[data-status]').textContent = !st ? '先打开一个聊天。' : notice || (!s.enabled ? '已暂停。' : checking ? '本轮正在随正文检查剧情…' : st.force ? '已安排：下次正常回复检查。' : last?.check && (!last.result || last.result.rejected) ? '上次报告未通过，将自动重试。' : `再完成 ${Math.max(1, v.interval - v.progress)} 个回合检查；不会单独调用模型。`);
+    root.querySelector('[data-status]').textContent = !st ? '先打开一个聊天。' : notice || (!s.enabled ? '已暂停。' : checking ? '本轮正在随正文检查剧情…' : st.force ? '已安排：下次正常回复检查。' : last?.check && (!last.result || last.result.rejected) ? `上次报告读取或核对失败，再完成 ${Math.max(1, v.interval - v.progress)} 回合检查。` : `再完成 ${Math.max(1, v.interval - v.progress)} 个回合检查；不会单独调用模型。`);
     root.querySelector('[data-status]').classList.toggle('rpd-error', Boolean(notice || (last?.check && (!last.result || last.result.rejected))));
-    root.querySelector('[data-last]').textContent = !last ? '尚无检查结果。满格时判断当前剧情适合内部推进、过渡还是开启新事。' : describeResult(last.result);
+    root.querySelector('[data-last]').textContent = !last ? '尚无检查结果。满格时判断当前剧情适合内部推进、过渡还是开启新事。' : describeResult(last.result, last.diagnostic, last.retry);
     root.querySelector('[data-story]').textContent = v.story
         ? `当前事项：${v.story.thread}\n角色目标：${v.story.goal || '未明确'}\n阻碍：${v.story.obstacle || '无明确阻碍'}\n待解决：${v.story.open || '无'}\n${v.lastChange ? `上次报告的实质变化：第 ${v.lastChange.round} 回合 · ${v.lastChange.after}\n此后累计 ${v.roundsSinceChange} 个回合` : '尚无新版实质变化报告'}\n连续 ${v.noProgressChecks} 次有效检查未报告实质变化（仅供判断，不等于必然停滞）`
         : '首次新版检查后形成剧情短记忆，随当前回复版本保存。';
@@ -119,7 +121,7 @@ function render() {
     for (const record of [...v.history].reverse()) {
         const el = document.createElement('div'); el.className = 'rpd-log';
         const r = record.result;
-        el.textContent = `第 ${record.round} 回合 · ${describeResult(r)}${r?.evidence ? `\n正文原句：${r.evidence}` : ''}\n当时安排间隔 ${r?.next ?? 2} 回合`;
+        el.textContent = `第 ${record.round} 回合 · ${describeResult(r, record.diagnostic, record.retry)}${r?.evidence ? `\n正文原句：${r.evidence}` : ''}\n检查后安排间隔 ${record.retry ?? r?.next ?? 2} 回合`;
         el.style.whiteSpace = 'pre-line'; log.append(el);
     }
 }
@@ -130,7 +132,7 @@ function mount() {
     if (!host) return;
     const wrapper = document.createElement('div');
     wrapper.className = 'extension_container';
-    wrapper.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>RP Director · 剧情导演 <small>1.2.0</small></b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="rpd-panel">
+    wrapper.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>RP Director · 剧情导演 <small>1.2.1</small></b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content"><div id="rpd-panel">
       <div class="rpd-top"><span>距离下次剧情检查</span><label><input type="checkbox" data-setting="enabled">启用</label></div>
       <div class="rpd-big" data-progress></div><progress value="0" max="8" aria-label="剧情检查进度"></progress>
       <div class="rpd-muted" data-total></div><div class="rpd-muted" data-mode></div><div class="rpd-status" data-status role="status" aria-live="polite"></div><div class="rpd-last" data-last></div>
@@ -143,7 +145,7 @@ function mount() {
       <label class="rpd-field">新NPC倾向<select class="text_pole" data-setting="npc"><option value="low">少引入</option><option value="normal">顺其自然</option><option value="high">较丰富</option></select></label>
       <label><input type="checkbox" data-setting="adaptive">AI调整下次间隔</label><label><input type="checkbox" data-setting="integrity">保留Char核心能力</label>
       <label><input type="checkbox" data-setting="care">偏好照顾型互动</label><label><input type="checkbox" data-setting="major">允许重大危机</label>
-      </div><p class="rpd-muted">关闭“AI调整下次间隔”可固定回合数，立即生效。自动模式下基础间隔用于清空后的首次检查。重大危机默认关闭。先判断发展中、收尾、平淡或停滞，再选择内部推进、自然过渡或新事。意外可来自角色主动、外部世界或已有后果，不固定抽签。原句与结构核对不能保证模型准确判断剧情质量。</p></details>
+      </div><p class="rpd-muted">关闭“AI调整下次间隔”可固定回合数，立即生效。自动模式下基础间隔用于清空后的首次检查。报告连续失败时按2、4、基础间隔（至少4）回合复查，避免无限每2回合重试。重大危机默认关闭。先判断发展中、收尾、平淡或停滞，再选择内部推进、自然过渡或新事。意外可来自角色主动、外部世界或已有后果，不固定抽签。原句与结构核对不能保证模型准确判断剧情质量。</p></details>
       <details><summary>当前剧情短记忆</summary><div class="rpd-story" data-story></div></details>
       <details><summary>最近5次检查</summary><div data-history></div></details>
       <p class="rpd-muted">一条用户消息获得有效回复算1回合；开场白、续写、重生成不额外累计。切换回复版本和删除消息时，进度随当前记录重新计算。</p>

@@ -24,7 +24,7 @@ test('seed and breathing room are not scored as advancement',()=>{
  assert.equal(parse({...hold,phase:'stagnant'}).next,3);
 });
 test('rejects same situation, missing consequence and contradictory fields',()=>{
- for(const patch of [{after:base.before},{after:base.before+'。'},{effect:''},{dimension:'none'},{level:0},{thread:''},{source:'none'}]) assert.ok(parse(patch).rejected);
+ for(const patch of [{after:base.before},{after:base.before+'。'},{effect:''},{dimension:'none'},{level:0},{source:'none'}]) assert.ok(parse(patch).rejected);
  assert.ok(parse({...hold,surprise:true}).rejected);
  assert.ok(parse({action:'seed',dimension:'none',seed:''}).rejected);
 });
@@ -38,7 +38,7 @@ test('rejects duplicate recent outcomes while preserving a distinct new outcome'
  assert.ok(advances(parse({after:'提出第二套不同的合作条件'},settings,prior)));
 });
 test('malformed enums, stale nonce and old protocol cannot masquerade as new reports',()=>{
- for(const patch of [{protocol:2},{action:'event'},{phase:'unknown'},{source:'toString'},{dimension:'unknown'},{surprise:'true'},{next:2.5}]) assert.equal(parse(patch),null);
+ for(const patch of [{protocol:2},{action:'event'},{phase:'unknown'},{source:'toString'},{dimension:'bogus'},{surprise:'maybe'},{next:2.5}]) assert.equal(parse(patch),null);
  assert.equal(parseStatus(`<!--RPDIR:old ${JSON.stringify(base)}-->`,'ticket',settings),null);
  assert.equal(stripStatus('正文\n<!--RPDIR:ticket {"phase":'),'正文');
 });
@@ -75,3 +75,46 @@ test('prompt carries short memory and explicitly covers agency, surprises and li
  for(const term of ['意外与世界自主变化','角色主动','跨多轮','不升级灾难','重大危机关闭','上次报告的实质变化','协商合作','RPDIR:ticket']) assert.ok(p.includes(term),term);
 
 });
+
+
+test('text report survives an HTML-comment filter; old comments remain readable',()=>{
+ const body=`${prose}\n[[RPDIR:ticket]]\n${JSON.stringify(base)}\n[[/RPDIR]]`;
+ const filtered=body.replace(/<!--[\s\S]*?-->/g,'');
+ assert.ok(advances(parseStatus(filtered,'ticket',settings)));
+ assert.equal(stripStatus(body),prose);
+ assert.equal(stripStatus(`${prose}\n[[RPDIR:ticket]] {"phase":`),prose);
+ assert.ok(advances(parse()));
+});
+test('optional metadata and harmless format deviations do not erase real reports',()=>{
+ const r={...base,protocol:undefined,source:undefined,dimension:undefined,surprise:undefined,next:undefined,level:'1'};
+ const d={}; const parsed=parseStatus(`${prose}\n[[RPDIR:ticket]]\n\`\`\`json\n${JSON.stringify(r)}\n\`\`\`\n[[/RPDIR]]`,'ticket',settings,[],d);
+ assert.ok(advances(parsed)); assert.equal(parsed.source,'unknown'); assert.equal(parsed.dimension,'unknown'); assert.equal(d.code,'ok');
+ assert.equal(parse({surprise:'false',next:'8'}).surprise,false);
+ assert.ok(parse({effect:undefined,dimension:undefined}).rejected);
+});
+test('diagnostics separate missing, truncated, wrong nonce, bad JSON and bad fields',()=>{
+ for(const [body,expected] of [[prose,'missing'],[prose+'[[RPDIR:ticket]]{}','incomplete'],['[[RPDIR:old]]{}[[/RPDIR]]','nonce_mismatch'],['[[RPDIR:ticket]]oops[[/RPDIR]]','invalid_json'],[`[[RPDIR:ticket]]${JSON.stringify({...base,phase:'bogus'})}[[/RPDIR]]`,'invalid_fields']]){
+  const d={};assert.equal(parseStatus(body,'ticket',settings,[],d),null);assert.equal(d.code,expected);
+ }
+});
+test('old repeated failures back off immediately, successful report resets and swipes recalculate',()=>{
+ const st=freshState(settings),chat=[];
+ const add=(id,result)=>chat.push({is_user:true,mes:'继续',extra:{[KEY]:{epoch:st.epoch,id}}},{mes:prose,extra:{[KEY]:{epoch:st.epoch,turn:id,check:true,result}}});
+ add('a',null);assert.equal(derive(chat,st,settings).interval,2);
+ add('b',null);assert.equal(derive(chat,st,settings).interval,4);
+ add('c',null);assert.equal(derive(chat,st,settings).interval,8);
+ add('d',parse({effect:''}));assert.equal(derive(chat,st,settings).failureChecks,4);
+ assert.equal(derive(chat,st,settings).interval,8);
+ add('e',parse());assert.equal(derive(chat,st,settings).failureChecks,0);
+ add('f',null);assert.equal(derive(chat,st,settings).interval,2);
+ chat.splice(-4);assert.equal(derive(chat,st,settings).failureChecks,4);
+ assert.equal(derive(chat,st,{...settings,adaptive:false,interval:5}).interval,5);
+ assert.equal(derive(chat,freshState(settings),settings).failureChecks,0);
+});
+test('omitted optional memory preserves prior facts while explicit empty fields clear them',()=>{
+ const old=parse(); const partial=parse({...hold,thread:undefined,goal:undefined,open:undefined,after:undefined});
+ const v=storyView([rec(old,1),rec(partial,2)],2);
+ assert.equal(v.story.goal,old.goal); assert.equal(v.story.open,old.open);assert.equal(v.story.situation,old.after);
+ const clear=parse({...hold,goal:'',open:''});const w=storyView([rec(old,1),rec(clear,2)],2);assert.equal(w.story.goal,'');assert.equal(w.story.open,'');
+});
+

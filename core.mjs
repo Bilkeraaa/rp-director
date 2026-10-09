@@ -6,35 +6,68 @@ export const freshState = (settings) => ({ version: 1, epoch: uid(), initialInte
 export const clean = (v, max = 100) => typeof v === 'string' ? v.replace(/[<>\u0000-\u001f]/g, ' ').slice(0, max).trim() : '';
 export function stripStatus(text) {
     // Remove only our namespaced tail, including truncated streaming output.
-    return String(text ?? '').replace(/<!--\s*RPDIR:[\s\S]*?(?:-->|$)/g, '').trimEnd();
+    return String(text ?? '').replace(/<!--\s*RPDIR:[\s\S]*?(?:-->|$)/g, '')
+        .replace(/\[\[RPDIR:[\s\S]*?(?:\[\[\/RPDIR\]\]|$)/g, '').trimEnd();
 }
 const compact = text => String(text ?? '').replace(/\s+/g, '');
 const comparable = text => compact(text).replace(/[\p{P}\p{S}]/gu, '');
 export const advances = r => r?.protocol === 3 && !r.rejected && ['internal', 'new', 'transition'].includes(r.action);
 export const PHASES = { active: '发展中', settling: '收尾', calm: '平淡', stagnant: '停滞' };
 export const ACTIONS = { internal: '内部推进', new: '开启新事', transition: '自然过渡', seed: '仅铺垫', hold: '暂缓' };
-export const SOURCES = { agency: '角色主动', world: '世界变化', consequence: '已有事情的后果', none: '无' };
-export const DIMENSIONS = { information: '重要信息', decision: '决定与行动', relationship: '关系局面', options: '机会与限制', consequence: '实际后果', closure: '收尾与过渡', none: '无' };
+export const SOURCES = { agency: '角色主动', world: '世界变化', consequence: '已有事情的后果', none: '无', unknown: '未报告' };
+export const DIMENSIONS = { information: '重要信息', decision: '决定与行动', relationship: '关系局面', options: '机会与限制', consequence: '实际后果', closure: '收尾与过渡', none: '无', unknown: '未报告' };
 
-export function parseStatus(text, nonce, settings, history = []) {
-    const blocks = [...String(text).matchAll(/<!--\s*RPDIR:([\w-]+)\s+(\{[\s\S]*?\})\s*-->/g)];
-    const block = blocks.findLast(x => x[1] === nonce);
-    if (!block) return null;
+// Recover innocuous formatting only: code fences, numeric/boolean strings and missing optional metadata.
+// Never infer a story event from prose or invent the required before/after/effect/evidence.
+export function parseStatus(text, nonce, settings, history = [], diagnostic = {}) {
+    const fail = (code, message, fields = []) => {
+        Object.assign(diagnostic, { code, message, fields });
+        return null;
+    };
+    const body = String(text ?? '');
+    const blocks = [
+        ...[...body.matchAll(/<!--\s*RPDIR:([\w-]+)\s+([\s\S]*?)-->/g)].map(x => ({ nonce: x[1], json: x[2], index: x.index })),
+        ...[...body.matchAll(/\[\[RPDIR:([\w-]+)\]\]([\s\S]*?)\[\[\/RPDIR\]\]/g)].map(x => ({ nonce: x[1], json: x[2], index: x.index })),
+    ].sort((a, b) => a.index - b.index);
+    const block = blocks.findLast(x => x.nonce === nonce);
+    if (!block) return fail(blocks.length ? 'nonce_mismatch' : /(?:<!--\s*RPDIR:|\[\[RPDIR:)/.test(body) ? 'incomplete' : 'missing',
+        blocks.length ? '收到的报告编号不属于本次检查。' : /(?:<!--\s*RPDIR:|\[\[RPDIR:)/.test(body) ? '报告开始了，但结尾不完整，可能输出被截断。' : '插件读到的回复中没有导演报告标记；可能未输出，或在读取前被过滤。');
+    let raw;
+    try { raw = JSON.parse(block.json.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
+    catch { return fail('invalid_json', '已收到报告，但JSON无法读取。'); }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('invalid_json', '导演报告必须是JSON对象。');
     try {
-        const raw = JSON.parse(block[2]);
-        if (raw.protocol !== 3 || !Object.hasOwn(PHASES, raw.phase) || !Object.hasOwn(ACTIONS, raw.action)
-            || !Object.hasOwn(SOURCES, raw.source) || !Object.hasOwn(DIMENSIONS, raw.dimension)
-            || typeof raw.surprise !== 'boolean' || !Number.isInteger(raw.level) || raw.level < 0 || raw.level > 4
-            || !Number.isInteger(raw.next)) return null;
-        const r = { protocol: 3, phase: raw.phase, action: raw.action, source: raw.source,
-            dimension: raw.dimension, surprise: raw.surprise, level: raw.level };
+        const fixes = [];
+        const number = (field, fallback) => {
+            if (raw[field] == null && fallback !== undefined) { fixes.push(field); return fallback; }
+            if (typeof raw[field] === 'string' && /^\d+$/.test(raw[field].trim())) { fixes.push(field); return Number(raw[field]); }
+            return raw[field];
+        };
+        const level = number('level'), next = number('next', clamp(settings.interval, 3, 20, 8));
+        const source = raw.source ?? (raw.action === 'hold' ? 'none' : 'unknown');
+        const dimension = raw.dimension ?? (['hold','seed'].includes(raw.action) ? 'none' : 'unknown');
+        const surprise = typeof raw.surprise === 'string' && /^(true|false)$/.test(raw.surprise)
+            ? (fixes.push('surprise'), raw.surprise === 'true') : raw.surprise ?? false;
+        const invalid = [];
+        if (raw.protocol != null && Number(raw.protocol) !== 3) invalid.push('protocol');
+        if (!Object.hasOwn(PHASES, raw.phase)) invalid.push('phase');
+        if (!Object.hasOwn(ACTIONS, raw.action)) invalid.push('action');
+        if (!Object.hasOwn(SOURCES, source)) invalid.push('source');
+        if (!Object.hasOwn(DIMENSIONS, dimension)) invalid.push('dimension');
+        if (typeof surprise !== 'boolean') invalid.push('surprise');
+        if (!Number.isInteger(level) || level < 0 || level > 4) invalid.push('level');
+        if (!Number.isInteger(next)) invalid.push('next');
+        if (invalid.length) return fail('invalid_fields', `已收到报告，但字段不符合格式：${invalid.join('、')}。`, invalid);
+        const r = { protocol: 3, phase: raw.phase, action: raw.action, source, dimension, surprise, level };
         for (const field of ['summary', 'before', 'after', 'effect', 'evidence', 'thread', 'goal', 'obstacle', 'open', 'seed', 'link']) r[field] = clean(raw[field], 120);
         for (const field of ['domain', 'target', 'entry', 'tone']) r[field] = clean(raw[field], 30);
+        r.memoryFields = ['thread','goal','obstacle','open','seed','after'].filter(field => typeof raw[field] === 'string');
         const changed = advances(r);
         let issue = '';
-        if (!r.summary || !r.thread || !r.before || !r.after) issue = '缺少当前剧情或前后局面说明。';
+        if (!r.summary) issue = '缺少本次判断的简短说明。';
+        else if (changed && (!r.before || !r.after)) issue = '缺少前后局面说明。';
         else if ((r.action === 'hold') !== (r.level === 0)) issue = '处理方式与影响尺度矛盾。';
-        else if (changed !== (r.dimension !== 'none')) issue = '没有说明局面改变在哪个方面。';
+        else if (r.dimension !== 'unknown' && changed !== (r.dimension !== 'none')) issue = '没有说明局面改变在哪个方面。';
         else if (r.action === 'hold' && (r.source !== 'none' || r.surprise)) issue = '暂缓报告不能同时声称引入了意外或主动变化。';
         else if (r.action !== 'hold' && r.source === 'none') issue = '缺少这次变化的来源。';
         else if (changed && (comparable(r.before) === comparable(r.after) || !r.effect)) issue = '前后局面没有区别，或未说明对后续的实际影响。';
@@ -42,16 +75,17 @@ export function parseStatus(text, nonce, settings, history = []) {
         else if (r.action !== 'hold' && (compact(r.evidence).length < 8 || !compact(stripStatus(text)).includes(compact(r.evidence)))) issue = '本轮正文中找不到报告引用的原句。';
         else if (r.phase === 'active' && r.source === 'world' && !r.link) issue = '已有事件正在发展，但未说明外部变化与当前事件的因果联系。';
         else if (changed && history.some(h => advances(h.result) && comparable(h.result.after) === comparable(r.after))) issue = '局面与近期已报告的结果相同，不能再次计为推进。';
-        if (issue) return { protocol: 3, phase: r.phase, action: 'hold', source: 'none', dimension: 'none', surprise: false,
-            level: 0, next: 2, rejected: true, issue, summary: r.summary, reportedAction: r.action };
+        if (issue) { Object.assign(diagnostic, { code: 'rejected', message: issue, fields: [] }); return { protocol: 3, phase: r.phase, action: 'hold', source: 'none', dimension: 'none', surprise: false,
+            level: 0, next: 2, rejected: true, issue, summary: r.summary, reportedAction: r.action }; }
         const limits = { quiet: [6, 16], balanced: [4, 12], lively: [3, 8] }[settings.activity] ?? [4, 12];
-        r.next = settings.adaptive ? clamp(raw.next, ...limits) : clamp(settings.interval, 3, 20, 8);
+        r.next = settings.adaptive ? clamp(next, ...limits) : clamp(settings.interval, 3, 20, 8);
         // Calm breathing room is allowed. Only reported stagnation needs an early recheck.
         if (settings.adaptive && r.phase === 'stagnant') r.next = Math.min(r.next, 3);
         const cap = Math.min(clamp(settings.maxLevel, 1, 4, 2), settings.major ? 4 : 3);
         r.warning = r.level > cap ? '模型报告的影响尺度超过设置，请检查正文。' : '';
+        Object.assign(diagnostic, { code: 'ok', message: fixes.length ? `已兼容格式偏差：${fixes.join('、')}。` : '报告已读取。', fields: [], normalized: fixes });
         return r;
-    } catch { return null; }
+    } catch { return fail('read_error', '报告读取出现异常。'); }
 }
 
 // Derive memory from the selected replies, so swipes, deletion and reset also roll it back.
@@ -60,7 +94,11 @@ export function storyView(history, total) {
     for (const h of history) {
         const r = h.result;
         if (r?.protocol !== 3 || r.rejected) { unverifiedChecks++; continue; }
-        story = { thread: r.thread, goal: r.goal, obstacle: r.obstacle, open: r.open, situation: r.after, seed: r.seed, round: h.round };
+        const fields = r.memoryFields ?? ['thread','goal','obstacle','open','seed','after'];
+        if (story || r.thread || r.after) {
+            story = { thread: '', goal: '', obstacle: '', open: '', situation: '', seed: '', ...story, round: h.round };
+            for (const field of fields) story[field === 'after' ? 'situation' : field] = r[field];
+        }
         if (advances(r)) {
             noProgressChecks = 0;
             lastChange = { round: h.round, before: r.before, after: r.after, effect: r.effect };
@@ -69,9 +107,9 @@ export function storyView(history, total) {
     return { story, noProgressChecks, unverifiedChecks, lastChange, roundsSinceChange: lastChange ? total - lastChange.round : null };
 }
 
-export function describeResult(r) {
-    if (!r) return '未收到可用的模型报告，2回合后重试。';
-    if (r.rejected) return `报告未通过核对\n${r.issue}\n这不代表正文一定没有推进；2回合后重新检查。`;
+export function describeResult(r, diagnostic, retry = 2) {
+    if (!r) return `报告读取失败\n${diagnostic?.message || '旧版记录没有保留失败原因，无法追溯是未输出还是格式错误。'}\n${retry}回合后检查；这不能证明正文没有推进。`;
+    if (r.rejected) return `报告未通过核对\n${r.issue}\n这不代表正文一定没有推进；${retry}回合后重新检查。`;
     if (r.protocol !== 3) return '旧版记录：未按前后局面评估，不作为新版的实质推进依据。';
     const change = advances(r)
         ? `模型报告局面有变化 · ${DIMENSIONS[r.dimension]}\n此前：${r.before}\n现在：${r.after}\n后续影响：${r.effect}`
@@ -105,19 +143,26 @@ export function derive(chat, state, settings, excludedTurn = '') {
     }
     let lastCheck = 0;
     let interval = state.initialInterval;
+    let failureChecks = 0;
     const history = [];
     records.forEach((r, i) => {
         if (r.check) {
             lastCheck = i + 1;
-            interval = r.result?.next ?? 2;
-            history.push({ ...r, round: i + 1 });
+            const failed = !r.result || r.result.rejected;
+            failureChecks = failed ? failureChecks + 1 : 0;
+            interval = failed ? retryInterval(failureChecks, settings) : r.result.next;
+            history.push({ ...r, round: i + 1, retry: !r.result || r.result.rejected ? interval : null });
         }
     });
     // A fixed interval takes effect immediately, except for a failed-report retry.
     const last = history.at(-1);
     if (!settings.adaptive && !(last && (!last.result || last.result.rejected))) interval = clamp(settings.interval, 3, 20, 8);
-    return { total: records.length, progress: records.length - lastCheck, interval, history: history.slice(-5), records,
+    return { total: records.length, progress: records.length - lastCheck, interval, history: history.slice(-5), records, failureChecks,
         ...storyView(history, records.length) };
+}
+export function retryInterval(failures, settings) {
+    const base = clamp(settings.interval, 3, 20, 8);
+    return failures === 1 ? 2 : failures === 2 ? 4 : Math.max(4, base);
 }
 export function buildPrompt(settings, state, view, nonce) {
     const recent = view.history.filter(x => x.result).map(x => {
@@ -140,6 +185,9 @@ ${settings.integrity ? '保留Char核心能力与人格定位，不以随机事�
 【短记忆，仅参考，正文为准】${JSON.stringify(view.story ?? null)}
 上次报告的实质变化：${JSON.stringify(view.lastChange ?? null)}
 近期检查：${JSON.stringify(recent)}
-【报告】正文末尾仅附一条HTML注释（不用代码块），按实际填写：<!--RPDIR:${nonce} {"protocol":3,"phase":"calm","action":"hold","source":"none","surprise":false,"dimension":"none","level":0,"summary":"暂缓理由","before":"此前局面","after":"本轮结束局面","effect":"","evidence":"","thread":"当前主要事项；无则写平淡期","goal":"角色当前目标；未知可空","obstacle":"阻碍；无则空","open":"仍未解决事项；无则空","seed":"当前待发展线索；无则空","link":"","domain":"","target":"","entry":"","tone":"","next":8}-->
-action仅internal/new/transition/seed/hold；source仅agency/world/consequence/none；surprise按是否有未预料到的变化如实填，不是必须。internal/new/transition的dimension仅information/decision/relationship/options/consequence/closure，需before、after、effect；seed/hold的dimension为none。hold用L0/source=none/surprise=false，其他用L1–L${cap}；非hold需evidence逐字摘本轮正文8–50字，seed需具体seed。thread/goal/obstacle/open/after记录实际状态，不预测不虚构；旧线索已解决就清空。所有说明各不超过40字。next是3–16整数有效回合；停滞宜短，重要互动与平静可留呼吸空间。`;
+【报告必须输出】剧情正文后另起一行，输出下面的专用文本区块。不要使用HTML注释，不要把报告省略；这是插件数据，插件会自动从显示与聊天正文移除。其他文风、结尾或状态栏要求仅适用于正文。
+[[RPDIR:${nonce}]]
+{"phase":"calm","action":"hold","level":0,"summary":"本次判断与暂缓理由","before":"此前局面","after":"本轮结束局面","effect":"","evidence":"","thread":"当前主要事项","goal":"角色目标","obstacle":"阻碍","open":"待解决事项","seed":"","next":8}
+[[/RPDIR]]
+照此格式按实际填写。必填phase=active/settling/calm/stagnant，action=internal/new/transition/seed/hold，level=0–${cap}整数，summary=简短判断。hold用L0，其他用L1–L${cap}。internal/new/transition必须before、after、effect；非hold必须evidence逐字摘本轮正文8–50字，seed需具体seed。thread/goal/obstacle/open/after记录实际状态，不预测不虚构；已解决项清空。可补source=agency/world/consequence、surprise=true/false、dimension=information/decision/relationship/options/consequence/closure；未补则不猜来源或维度。active中的外部变化须补source=world与link因果联系。各说明不超过40字，next为3–16整数。`;
 }
